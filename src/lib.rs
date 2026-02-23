@@ -13,7 +13,7 @@ pub use self::mutex::Mutex;
 ///
 /// An instance of this type indicates that the current thread is executing code within a critical
 /// section.
-#[derive(Clone, Copy, Debug)]
+#[derive(Debug)]
 pub struct CriticalSection<'cs> {
     _private: PhantomData<&'cs ()>,
 
