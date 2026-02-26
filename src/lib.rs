@@ -261,6 +261,7 @@ pub unsafe trait Impl {
     /// # Safety
     ///
     /// Callers must uphold the contract specified in [`crate::acquire`] and [`crate::release`].
+
     unsafe fn acquire() -> RawRestoreState;
 
     /// Release the critical section.
@@ -268,6 +269,7 @@ pub unsafe trait Impl {
     /// # Safety
     ///
     /// Callers must uphold the contract specified in [`crate::acquire`] and [`crate::release`].
+
     unsafe fn release(restore_state: RawRestoreState);
 }
 
@@ -297,10 +299,12 @@ pub unsafe trait Impl {
 macro_rules! set_impl {
     ($t: ty) => {
         #[no_mangle]
+        #[inline(always)]
         unsafe fn _critical_section_1_0_acquire() -> $crate::RawRestoreState {
             <$t as $crate::Impl>::acquire()
         }
         #[no_mangle]
+        #[inline(always)]
         unsafe fn _critical_section_1_0_release(restore_state: $crate::RawRestoreState) {
             <$t as $crate::Impl>::release(restore_state)
         }
