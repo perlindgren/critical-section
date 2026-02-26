@@ -71,7 +71,9 @@ impl<'cs> CriticalSection<'cs> {
     all(feature = "restore-state-u32", feature = "restore-state-usize"),
     all(feature = "restore-state-u64", feature = "restore-state-usize"),
 ))]
-compile_error!("You must set at most one of these Cargo features: restore-state-none, restore-state-bool, restore-state-u8, restore-state-u16, restore-state-u32, restore-state-u64, restore-state-usize");
+compile_error!(
+    "You must set at most one of these Cargo features: restore-state-none, restore-state-bool, restore-state-u8, restore-state-u16, restore-state-u32, restore-state-u64, restore-state-usize"
+);
 
 #[cfg(not(any(
     feature = "restore-state-bool",
@@ -192,15 +194,15 @@ impl RestoreState {
 /// - It must provide ordering guarantees at least equivalent to a [`core::sync::atomic::Ordering::Acquire`]
 ///   on a memory location shared by all critical sections, on which the `release` call will do a
 ///   [`core::sync::atomic::Ordering::Release`] operation.
-#[inline(always)]
-pub unsafe fn acquire() -> RestoreState {
-    extern "Rust" {
-        fn _critical_section_1_0_acquire() -> RawRestoreState;
-    }
+// #[inline(always)]
+// pub unsafe fn acquire() -> RestoreState {
+//     extern "Rust" {
+//         fn _critical_section_1_0_acquire() -> RawRestoreState;
+//     }
 
-    #[allow(clippy::unit_arg)]
-    RestoreState(_critical_section_1_0_acquire())
-}
+//     #[allow(clippy::unit_arg)]
+//     RestoreState(_critical_section_1_0_acquire())
+// }
 
 /// Release the critical section.
 ///
@@ -209,14 +211,68 @@ pub unsafe fn acquire() -> RestoreState {
 /// # Safety
 ///
 /// See [`acquire`] for the safety contract description.
+// #[inline(always)]
+// pub unsafe fn release(restore_state: RestoreState) {
+//     extern "Rust" {
+//         fn _critical_section_1_0_release(restore_state: RawRestoreState);
+//     }
+
+//     #[allow(clippy::unit_arg)]
+//     _critical_section_1_0_release(restore_state.0)
+// }
+
+/// Get critical section state.
+///
+/// This function is extremely low level. Strongly prefer using [`with`] instead.
+///
+/// # Safety
+///
+/// Free of side effects.
 #[inline(always)]
-pub unsafe fn release(restore_state: RestoreState) {
-    extern "Rust" {
-        fn _critical_section_1_0_release(restore_state: RawRestoreState);
+pub unsafe fn get_state() -> RestoreState {
+    unsafe extern "Rust" {
+        unsafe fn _critical_section_1_0_get_state() -> RawRestoreState;
     }
 
     #[allow(clippy::unit_arg)]
-    _critical_section_1_0_release(restore_state.0)
+    RestoreState(unsafe { _critical_section_1_0_get_state() })
+}
+
+/// Set critical section state.
+///
+/// This function is extremely low level. Strongly prefer using [`with`] instead.
+///
+/// # Safety
+///
+/// See [`acquire`] for the safety contract description.
+#[inline(always)]
+pub unsafe fn set_state(restore_state: RestoreState) {
+    unsafe extern "Rust" {
+        unsafe fn _critical_section_1_0_set_state(restore_state: RawRestoreState);
+    }
+
+    #[allow(clippy::unit_arg)]
+    unsafe {
+        _critical_section_1_0_set_state(restore_state.0)
+    }
+}
+
+/// Get critical section states (enable, disable).
+///
+/// This function is extremely low level. Strongly prefer using [`with`] instead.
+///
+/// # Safety
+///
+/// Free of side effects.
+#[inline(always)]
+pub unsafe fn get_states() -> (RestoreState, RestoreState) {
+    unsafe extern "Rust" {
+        unsafe fn _critical_section_1_0_get_states() -> (RawRestoreState, RawRestoreState);
+    }
+
+    #[allow(clippy::unit_arg)]
+    let (enable, disable) = unsafe { _critical_section_1_0_get_states() };
+    (RestoreState(enable), RestoreState(disable))
 }
 
 /// Execute closure `f` in a critical section.
@@ -238,14 +294,45 @@ pub fn with<R>(f: impl FnOnce(CriticalSection) -> R) -> R {
     impl Drop for Guard {
         #[inline(always)]
         fn drop(&mut self) {
-            unsafe { release(self.state) }
+            unsafe { set_state(self.state) }
         }
     }
 
-    let state = unsafe { acquire() };
+    let state = unsafe { get_state() };
     let _guard = Guard { state };
+    let disable = unsafe { get_states().1 };
+    unsafe { set_state(disable) }
 
     unsafe { f(CriticalSection::new()) }
+}
+
+/// Execute closure `f` in a preemptive region inside a critical section.
+///
+/// Nesting critical sections is allowed. The inner critical sections
+/// are mostly no-ops since they're already protected by the outer one.
+///
+/// # Panics
+///
+/// This function panics if the given closure `f` panics. In this case
+/// the critical section is released before unwinding.
+#[inline]
+pub fn preemption_within<R>(_cs: &mut CriticalSection, f: impl FnOnce() -> R) -> R {
+    // Helper for making sure `release` is called even if `f` panics.
+    struct Guard {}
+
+    impl Drop for Guard {
+        #[inline(always)]
+        fn drop(&mut self) {
+            let disable = unsafe { get_states().1 };
+            unsafe { set_state(disable) }
+        }
+    }
+
+    let enable = unsafe { get_states().0 };
+    unsafe { set_state(enable) };
+    let _guard = Guard {};
+
+    f()
 }
 
 /// Methods required for a critical section implementation.
@@ -261,14 +348,24 @@ pub unsafe trait Impl {
     /// # Safety
     ///
     /// Callers must uphold the contract specified in [`crate::acquire`] and [`crate::release`].
-    unsafe fn acquire() -> RawRestoreState;
+    // unsafe fn acquire() -> RawRestoreState;
 
     /// Release the critical section.
     ///
     /// # Safety
     ///
     /// Callers must uphold the contract specified in [`crate::acquire`] and [`crate::release`].
-    unsafe fn release(restore_state: RawRestoreState);
+    //unsafe fn release(restore_state: RawRestoreState);
+
+    /// Should return the "enable" and "disable" restore states.
+    ///
+    /// By itself free of side effects
+    unsafe fn get_states() -> (RawRestoreState, RawRestoreState);
+
+    /// Should return the current state, later to be restored by `set_state`.
+    unsafe fn get_state() -> RawRestoreState;
+    /// Should set the current state to the raw_restore_state.
+    unsafe fn set_state(raw_restore_state: RawRestoreState);
 }
 
 /// Set the critical section implementation.
@@ -296,13 +393,29 @@ pub unsafe trait Impl {
 #[macro_export]
 macro_rules! set_impl {
     ($t: ty) => {
-        #[no_mangle]
-        unsafe fn _critical_section_1_0_acquire() -> $crate::RawRestoreState {
-            <$t as $crate::Impl>::acquire()
+        // #[no_mangle]
+        // unsafe fn _critical_section_1_0_acquire() -> $crate::RawRestoreState {
+        //     <$t as $crate::Impl>::acquire()
+        // }
+        // #[no_mangle]
+        // unsafe fn _critical_section_1_0_release(restore_state: $crate::RawRestoreState) {
+        //     <$t as $crate::Impl>::release(restore_state)
+        // }
+
+        #[unsafe(no_mangle)]
+        unsafe fn _critical_section_1_0_states()
+        -> ($crate::RawRestoreState, $crate::RawRestoreState) {
+            unsafe { <$t as $crate::Impl>::get_states() }
         }
-        #[no_mangle]
-        unsafe fn _critical_section_1_0_release(restore_state: $crate::RawRestoreState) {
-            <$t as $crate::Impl>::release(restore_state)
+
+        #[unsafe(no_mangle)]
+        unsafe fn _critical_section_1_0_set_state(restore_state: $crate::RawRestoreState) {
+            unsafe { <$t as $crate::Impl>::set_state(restore_state) }
+        }
+
+        #[unsafe(no_mangle)]
+        unsafe fn _critical_section_1_0_get_state() -> $crate::RawRestoreState {
+            unsafe { <$t as $crate::Impl>::get_state() }
         }
     };
 }
