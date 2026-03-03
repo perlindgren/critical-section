@@ -136,7 +136,7 @@ pub type RawRestoreState = RawRestoreStateInner;
 /// User code uses [`RestoreState`] opaquely, critical section implementations
 /// use [`RawRestoreState`] so that they can use the inner value.
 #[derive(Clone, Copy, Debug)]
-pub struct RestoreState(RawRestoreState);
+pub struct RestoreState(pub RawRestoreState);
 
 impl RestoreState {
     /// Create an invalid, dummy  `RestoreState`.
@@ -314,7 +314,7 @@ pub fn with<R>(f: impl FnOnce(CriticalSection) -> R) -> R {
 /// # Panics
 ///
 /// This function panics if the given closure `f` panics. In this case
-/// the critical section is released before unwinding.
+/// the preemption region is released before unwinding.
 #[inline]
 pub fn preemption_within<R>(_cs: &mut CriticalSection, f: impl FnOnce() -> R) -> R {
     // Helper for making sure `release` is called even if `f` panics.
@@ -335,6 +335,15 @@ pub fn preemption_within<R>(_cs: &mut CriticalSection, f: impl FnOnce() -> R) ->
     f()
 }
 
+/// Execute empty in a preemptive region inside a critical section.
+///
+/// Allows pending interrupts/context switches to be handled.
+///
+/// See [`preemption_within`] for additional information.
+#[inline]
+pub fn preemption_point_within<R>(cs: &mut CriticalSection) {
+    preemption_within(cs, || {});
+}
 /// Methods required for a critical section implementation.
 ///
 /// This trait is not intended to be used except when implementing a critical section.
@@ -356,6 +365,16 @@ pub unsafe trait Impl {
     ///
     /// Callers must uphold the contract specified in [`crate::acquire`] and [`crate::release`].
     //unsafe fn release(restore_state: RawRestoreState);
+
+    // /// Should return the "enable" and "disable" restore states.
+    // ///
+    // /// By itself free of side effects
+    // unsafe fn get_states() -> (RawRestoreState, RawRestoreState);
+
+    // /// Should return the current state, later to be restored by `set_state`.
+    // unsafe fn get_state(store: &RacyCell<RawRestoreState>) -> RawRestoreState;
+    // /// Should set the current state to the raw_restore_state.
+    // unsafe fn set_state(raw_restore_state: RawRestoreState, store: &RacyCell<RawRestoreState>);
 
     /// Should return the "enable" and "disable" restore states.
     ///
@@ -393,17 +412,27 @@ pub unsafe trait Impl {
 #[macro_export]
 macro_rules! set_impl {
     ($t: ty) => {
-        // #[no_mangle]
-        // unsafe fn _critical_section_1_0_acquire() -> $crate::RawRestoreState {
-        //     <$t as $crate::Impl>::acquire()
+        // static STORE: $crate::RacyCell<$crate::RawRestoreState> =
+        //     $crate::RacyCell::new($crate::RestoreState::invalid().0);
+
+        // #[unsafe(no_mangle)]
+        // unsafe fn _critical_section_1_0_get_states()
+        // -> ($crate::RawRestoreState, $crate::RawRestoreState) {
+        //     unsafe { <$t as $crate::Impl>::get_states() }
         // }
-        // #[no_mangle]
-        // unsafe fn _critical_section_1_0_release(restore_state: $crate::RawRestoreState) {
-        //     <$t as $crate::Impl>::release(restore_state)
+
+        // #[unsafe(no_mangle)]
+        // unsafe fn _critical_section_1_0_set_state(restore_state: $crate::RawRestoreState) {
+        //     unsafe { <$t as $crate::Impl>::set_state(restore_state, &STORE) }
+        // }
+
+        // #[unsafe(no_mangle)]
+        // unsafe fn _critical_section_1_0_get_state() -> $crate::RawRestoreState {
+        //     unsafe { <$t as $crate::Impl>::get_state(&STORE) }
         // }
 
         #[unsafe(no_mangle)]
-        unsafe fn _critical_section_1_0_states()
+        unsafe fn _critical_section_1_0_get_states()
         -> ($crate::RawRestoreState, $crate::RawRestoreState) {
             unsafe { <$t as $crate::Impl>::get_states() }
         }
@@ -419,3 +448,37 @@ macro_rules! set_impl {
         }
     };
 }
+
+use core::cell::UnsafeCell;
+#[repr(transparent)]
+pub struct RacyCell<T>(UnsafeCell<T>);
+
+impl<T> RacyCell<T> {
+    /// Create a ``RacyCell``
+    #[inline(always)]
+    pub const fn new(value: T) -> Self {
+        RacyCell(UnsafeCell::new(value))
+    }
+
+    /// Get `*mut T`
+    ///
+    /// # Safety
+    ///
+    /// See documentation notes for [`RacyCell`]
+    #[inline(always)]
+    pub unsafe fn get_mut(&self) -> *mut T {
+        self.0.get()
+    }
+
+    /// Get `*const T`
+    ///
+    /// # Safety
+    ///
+    /// See documentation notes for [`RacyCell`]
+    #[inline(always)]
+    pub unsafe fn get(&self) -> *const T {
+        self.0.get()
+    }
+}
+
+unsafe impl<T> Sync for RacyCell<T> {}

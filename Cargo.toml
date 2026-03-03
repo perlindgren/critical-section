@@ -9,7 +9,7 @@ license = "MIT OR Apache-2.0"
 categories = ["embedded", "no-std", "concurrency"]
 
 [features]
-default = ["std"]
+# default = ["std"]
 
 # Enable a critical-section implementation for platforms supporting `std`, based on `std::sync::Mutex`.
 # If you enable this, the `critical-section` crate itself provides the implementation,
